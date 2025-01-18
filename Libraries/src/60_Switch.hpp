@@ -4,34 +4,31 @@
 
 /* @HEADER */
 #ifndef SMM_NO_SWITCH
-class PcInterruptPort;
 class Switch;
 
-class PcInterruptManager {
-	public:
-	#if defined(SMM_ARCH_MEGA)
-	#ifndef SMM_PCINT_NO_PORTB
-	static PcInterruptPort portB;
-	#endif
-	#ifndef SMM_PCINT_NO_PORTJ
-	static PcInterruptPort portJ;
-	#endif
-	#ifndef SMM_PCINT_NO_PORTK
-	static PcInterruptPort portK;
-	#endif
-	#elif defined(SMM_ARCH_UNO)
-	#ifndef SMM_PCINT_NO_PORTB
-	static PcInterruptPort portB;
-	#endif
-	#ifndef SMM_PCINT_NO_PORTC
-	static PcInterruptPort portC;
-	#endif
-	#ifndef SMM_PCINT_NO_PORTD
-	static PcInterruptPort portD;
-	#endif
-	#endif
+#ifdef SMM_ARCH_TEENSY4
+#define READ_PIN digitalReadFast
+#else
+#define READ_PIN digitalRead
+#endif
 
-	static void AddSwitch(int pin, Switch *b);
+#ifndef SMM_SWITCHES_POLL_RATE
+// default: poll every 1ms
+#define SMM_SWITCHES_POLL_RATE 1000
+#endif
+
+class SwitchInterruptManager {
+  public:
+  static void Setup();
+  static bool SetupDone;
+  static void SetPollRate(unsigned long us);
+  static void AddSwitch(Switch *b);
+  static void Poll();
+  private:
+  static Switch * list;
+  #ifdef SMM_ARCH_TEENSY4
+  static IntervalTimer timer;
+  #endif
 };
 
 
@@ -71,220 +68,131 @@ class PcInterruptManager {
  * before including `smm.h`.
  */
 class Switch {
-	protected:
-	volatile Switch *m_next;
-	volatile uint8_t m_mask;
-	volatile unsigned long m_debounceTime;
-	volatile unsigned long m_lastTime;
-	volatile bool m_inverted;
-	volatile bool m_isLow;
-	friend class PcInterruptPort;
+  protected:
+  friend class SwitchInterruptManager;
+  volatile uint8_t pin;
+  volatile uint16_t state;
+  volatile Switch *next;
 
-	void addSwitch(Switch *b) {
-		if (m_next != nullptr) {
-			m_next->addSwitch(b);
-		}
-		else {
-			m_next = b;
-		}
-	}
+  void addSwitch(Switch *b);
+  void update();
 
-	void onChange(int state) {
-		if ((millis() - m_lastTime) < m_debounceTime) {
-			// still debouncing, ignore
-			return;
-		}
+  public:
+  /** @brief (constructor)
+   *
+   * @param pin  The Arduino pin to monitor
+   * @param debounceTime  The time in milliseconds to debounce after a state change
+   */
+  Switch(int pin, bool pullUp, bool defaultState);
 
-		bool isLow = state == 0;
-		if (m_isLow == isLow) {
-			// no change in state, ignore
-			return;
-		}
-
-		m_isLow = isLow;
-		m_lastTime = millis();
-		if (m_isLow)
-			onLow();
-		else
-			onHigh();
-	}
-
-	public:
-	/** @brief (constructor)
-	 *
-	 * @param pin  The Arduino pin to monitor
-	 * @param debounceTime  The time in milliseconds to debounce after a state change
-	 */
-	Switch(int pin, bool pullUp=true, unsigned long debounceTime=5) {
-		m_next = nullptr;
-		m_mask = digitalPinToBitMask(pin);
-		m_debounceTime = debounceTime;
-		m_lastTime = 0;
-		m_isLow = false;
-
-		if (pullUp) {
-			pinMode(pin, INPUT_PULLUP);
-		}
-		else {
-			pinMode(pin, INPUT);
-		}
-		PcInterruptManager::AddSwitch(pin, this);
-	}
-
-	/** @brief pure virtual function, called when going LOW */
-	virtual void onLow() = 0;
-	/** @brief pure virtual function, called when going HIGH */
-	virtual void onHigh() = 0;
+  /** @brief pure virtual function, called when going LOW */
+  virtual void onLow() = 0;
+  /** @brief pure virtual function, called when going HIGH */
+  virtual void onHigh() = 0;
 };
-
-class PcInterruptPort {
-	protected:
-	volatile Switch *m_head;
-	volatile uint8_t m_pinMask;
-	volatile uint8_t m_previousState;
-	volatile uint8_t *m_pcmsk;
-
-	public:
-	PcInterruptPort(int index, uint8_t *pcmsk) {
-		m_pcmsk = pcmsk;
-		cli();
-		PCICR |= (1<<index);
-		sei();
-		m_head = nullptr;
-		m_pinMask = 0;
-		m_previousState = 0xff;
-	}
-
-	void addSwitch(Switch *b) {
-		if (m_head == nullptr) {
-			m_head = b;
-		}
-		else {
-			m_head->addSwitch(b);
-		}
-		cli();
-		(*m_pcmsk) |= b->m_mask;
-		sei();
-		m_pinMask |= b->m_mask;
-	}
-
-	void onChange(uint8_t state) {
-		uint8_t changed = state ^ m_previousState;
-		m_previousState = state;
-
-		Switch *b = m_head;
-		while (b != nullptr) {
-				if (changed & b->m_mask) {
-				b->onChange(state & b->m_mask);
-			}
-			b = b->m_next;
-		}
-	}
-};
-/* ifndef SMM_NO_SWITCH */
 #endif
+
+
 
 /* @IMPLEMENTATION */
 #ifndef SMM_NO_SWITCH
 /* smm::Switch implementation */
-void smm::PcInterruptManager::AddSwitch(int pin, smm::Switch *b) {
-	uint8_t port = digitalPinToPort(pin);
-	uint16_t oport = portOutputRegister(port);
 
-	#if defined(SMM_ARCH_MEGA)
-	if (oport == &PORTB) {
-		#ifndef SMM_PCINT_NO_PORTB
-		portB.addSwitch(b);
-		#endif
-	}
-	else if (oport == &PORTJ) {
-		#ifndef SMM_PCINT_NO_PORTJ
-		portJ.addSwitch(b);
-		#endif
-	}
-	else if (oport == &PORTK) {
-		#ifndef SMM_PCINT_NO_PORTK
-		portK.addSwitch(b);
-		#endif
-	}
-	#elif defined(SMM_ARCH_UNO)
-	if (oport == &PORTB) {
-		#ifndef SMM_PCINT_NO_PORTB
-		portB.addSwitch(b);
-		#endif
-	}
-	else if (oport == &PORTC) {
-		#ifndef SMM_PCINT_NO_PORTC
-		portC.addSwitch(b);
-		#endif
-	}
-	else if (oport == &PORTD) {
-		#ifndef SMM_PCINT_NO_PORTD
-		portD.addSwitch(b);
-		#endif
-	}
-	#endif
-	#ifndef SMM_ARCH_UNKNOWN
-	else {
-		Serial.print("\n\n\n\n\n\n\n\n");
-		Serial.println("!!!!!!!! WARNING !!!!!!!!");
-		Serial.print("No PCINT port for pin ");
-		Serial.print(pin);
-		Serial.println("; it WILL NOT work as a switch!");
-	}
-	#else
-	Serial.println("\n\n\n\n\n\n\n\n\n\n\n\nThis chipset is currently not supported by smm::Switch.");
-	#endif
-}
-
-#if defined(SMM_ARCH_MEGA)
-#ifndef SMM_PCINT_NO_PORTB
-smm::PcInterruptPort smm::PcInterruptManager::portB(PCIE0, &PCMSK0);
-ISR(PCINT0_vect) {
-	uint8_t pins = PINB;
-	smm::PcInterruptManager::portB.onChange(pins);
-}
-#endif
-#ifndef SMM_PCINT_NO_PORTJ
-smm::PcInterruptPort smm::PcInterruptManager::portJ(PCIE1, &PCMSK1);
-ISR(PCINT1_vect) {
-	uint8_t pins = PINJ;
-	smm::PcInterruptManager::portJ.onChange(pins);
-}
-#endif
-#ifndef SMM_PCINT_NO_PORTK
-smm::PcInterruptPort smm::PcInterruptManager::portK(PCIE2, &PCMSK2);
-ISR(PCINT2_vect) {
-	uint8_t pins = PINK;
-	smm::PcInterruptManager::portK.onChange(pins);
-}
+// SwitchInterruptManager static members
+bool smm::SwitchInterruptManager::SetupDone = false;
+smm::Switch * smm::SwitchInterruptManager::list = nullptr;
+#ifdef SMM_ARCH_TEENSY4
+static IntervalTimer smm::SwitchInterruptManager::timer;
 #endif
 
-#elif defined(SMM_ARCH_UNO)
-#ifndef SMM_PCINT_NO_PORTB
-smm::PcInterruptPort smm::PcInterruptManager::portB(PCIE0, &PCMSK0);
-ISR(PCINT0_vect) {
-	uint8_t pins = PINB;
-	smm::PcInterruptManager::portB.onChange(pins);
+
+#define DEBUG(msg) Serial.println(msg); for(int i=0; i<100; i++) {}
+
+
+void smm::SwitchInterruptManager::Setup() {
+  if (SetupDone) { return; }
+  Serial.begin(9600);
+  delay(200);
+  DEBUG("a");
+  SetupDone = true;
+  #ifdef SMM_ARCH_TEENSY4
+    timer.begin(Poll, SMM_SWITCHES_POLL_RATE);
+  #else
+    // TODO: other architectures
+    Serial.println(
+      "\n\n\n\n\n\n\n\n\n\n!! WARNING !!\n"
+      "This architecture is not currently supported by smm::Switch!"
+    );
+  #endif
+  DEBUG("b");
 }
-#endif
-#ifndef SMM_PCINT_NO_PORTC
-smm::PcInterruptPort smm::PcInterruptManager::portC(PCIE1, &PCMSK1);
-ISR(PCINT1_vect) {
-	uint8_t pins = PINC;
-	smm::PcInterruptManager::portC.onChange(pins);
+void smm::SwitchInterruptManager::SetPollRate(unsigned long us) {
+  #ifdef SMM_ARCH_TEENSY4
+    timer.update(us);
+  #else
+    // TODO: other architectures
+    Serial.println(
+      "\n\n\n\n\n\n\n\n\n\n!! WARNING !!\n"
+      "This architecture is not currently supported by smm::Switch!"
+    );
+  #endif
 }
-#endif
-#ifndef SMM_PCINT_NO_PORTD
-smm::PcInterruptPort smm::PcInterruptManager::portD(PCIE2, &PCMSK2);
-ISR(PCINT2_vect) {
-	uint8_t pins = PIND;
-	smm::PcInterruptManager::portD.onChange(pins);
+void smm::SwitchInterruptManager::AddSwitch(Switch *b) {
+  // Setup();
+  if (list == nullptr) {
+    list = b;
+  } else {
+    list->addSwitch(b);
+  }
+}
+void smm::SwitchInterruptManager::Poll() {
+  if (list != nullptr) {
+    list->update();
+  }
+}
+
+
+void smm::Switch::addSwitch(Switch *b) {
+  if (next != nullptr) {
+    next->addSwitch(b);
+  }
+  else {
+    next = b;
+  }
+}
+void smm::Switch::update() {
+  state = (state << 1) | READ_PIN(pin) | 0xe000;
+  if (state == 0xf000) {
+    // going low
+    onLow();
+  } else if (state == 0xefff) {
+    // going high
+    onHigh();
+  }
+  if (next != nullptr) {
+    next->update();
+  }
+}
+smm::Switch::Switch(int pin, bool pullUp=true, bool defaultState=false) : pin(pin) {
+  next = nullptr;
+  if (defaultState) {
+    state = 0xffff;
+  } else {
+    state = 0;
+  }
+  if (pullUp) {
+    pinMode(pin, INPUT_PULLUP);
+  }
+  else {
+    pinMode(pin, INPUT);
+  }
+  SwitchInterruptManager::AddSwitch(this);
 }
 #endif
 
-#endif
-/* ifndef SMM_NO_SWITCH */
-#endif
 
+/* @SETUP */
+  #ifndef SMM_NO_SWITCH
+  smm::SwitchInterruptManager::Setup();
+  #endif
 /* @END */

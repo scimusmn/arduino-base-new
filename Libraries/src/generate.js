@@ -44,6 +44,7 @@ function BuildFile(sourceFiles) {
 	let headers = [];
 	let externs = [];
 	let implementations = [];
+	let setups = [];
 
 	for (let filename of sourceFiles) {
 		const source = LoadFile(filename);
@@ -51,6 +52,7 @@ function BuildFile(sourceFiles) {
 		headers.push(GetSection(source, 'HEADER'));
 		externs.push(GetSection(source, 'EXTERN'));
 		implementations.push(GetSection(source, 'IMPLEMENTATION'));
+		setups.push(GetSection(source, 'SETUP'));
 	}
 
 	// create array of includes
@@ -62,6 +64,7 @@ function BuildFile(sourceFiles) {
 	headers = headers.filter(h => /\S+/.test(h));
 	externs = externs.filter(e => /\S+/.test(e));
 	implementations = implementations.filter(i => /\S+/.test(i));
+	setups = setups.filter(s => /\S+/.test(s));
 
 	const data = `/** @file smm.h */
 #pragma once
@@ -79,7 +82,10 @@ ${includes.join('\n')}
 
 namespace smm {
 
+  void setup();
+
 ${headers.join('\n\n')}
+
 /* end namespace smm */
 }
 
@@ -93,6 +99,10 @@ ${externs.join('\n')}
  *#############################################################################*/
 #if defined(SMM_IMPLEMENTATION)
 ${implementations.join('\n\n')}
+
+void smm::setup() {
+${setups.join('\n')}
+}
 #endif
 `;
 	writeFileSync('../smm.h', data);

@@ -14,6 +14,9 @@
 	/* arduino uno (and other things too?) */
 #	define SMM_ARCH_UNO
 
+#elif defined(__IMXRT1062__)
+#    define SMM_ARCH_TEENSY4
+
 #else
 	/* other arduinos */
 #	define SMM_ARCH_UNKNOWN
